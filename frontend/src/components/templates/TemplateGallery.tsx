@@ -7,70 +7,18 @@ import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
-const MOCK_TEMPLATES = [
-  {
-    id: '1',
-    name: 'Liquidity Pool',
-    description: 'A standard Constant Product Market Maker (CPMM) implementation for Soroban.',
-    author: 'StellarDev',
-    stars: 128,
-    tags: ['DeFi', 'AMM'],
-    version: '1.0.2',
-  },
-  {
-    id: '2',
-    name: 'NFT Marketplace',
-    description: 'Complete marketplace contract with minting, listing, and royalty support.',
-    author: 'OrbitalLabs',
-    stars: 85,
-    tags: ['NFT', 'Assets'],
-    version: '0.9.5',
-  },
-  {
-    id: '3',
-    name: 'DAO Governance',
-    description: 'On-chain voting and proposal management system for decentralized organizations.',
-    author: 'AstroChain',
-    stars: 210,
-    tags: ['DAO', 'Governance'],
-    version: '2.1.0',
-  },
-  {
-    id: '4',
-    name: 'Token Bridge',
-    description: 'Cross-chain token transfer bridge logic with multisig verification.',
-    author: 'QuantumBridge',
-    stars: 56,
-    tags: ['Bridge', 'Security'],
-    version: '1.2.0',
-  },
-  {
-    id: '5',
-    name: 'Stablecoin Vault',
-    description: 'Collateralized debt position (CDP) contract for minting stablecoins.',
-    author: 'NovaFinance',
-    stars: 94,
-    tags: ['Stablecoin', 'Finance'],
-    version: '1.1.0',
-  },
-  {
-    id: '6',
-    name: 'Subscription Engine',
-    description: 'Recurring payment logic for SaaS products on the Stellar network.',
-    author: 'StellarPay',
-    stars: 42,
-    tags: ['Payments', 'SaaS'],
-    version: '0.8.0',
-  },
-];
+import communityTemplates from '@/data/community-templates.json';
 
 export function TemplateGallery() {
   const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState<'All' | 'DeFi' | 'Utility' | 'DAO'>('All');
 
-  const filteredTemplates = MOCK_TEMPLATES.filter((t) =>
-    t.name.toLowerCase().includes(search.toLowerCase()) ||
-    t.tags.some(tag => tag.toLowerCase().includes(search.toLowerCase()))
-  );
+  const filteredTemplates = communityTemplates.filter((t) => {
+    const matchesSearch = t.name.toLowerCase().includes(search.toLowerCase()) ||
+      t.tags.some(tag => tag.toLowerCase().includes(search.toLowerCase()));
+    const matchesCategory = activeCategory === 'All' || t.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   const handleOpenInIDE = (id: string) => {
     // Mock deep-linking API
@@ -101,7 +49,20 @@ export function TemplateGallery() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="flex flex-wrap items-center gap-2 mb-8">
+          {(['All', 'DeFi', 'Utility', 'DAO'] as const).map((cat) => (
+            <Button
+              key={cat}
+              variant={activeCategory === cat ? 'default' : 'outline'}
+              className="rounded-full px-5 transition-all duration-300 font-medium active:scale-95"
+              onClick={() => setActiveCategory(cat)}
+            >
+              {cat}
+            </Button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-all duration-500">
           {filteredTemplates.map((template) => (
             <Card key={template.id} className="group hover:shadow-xl hover:border-primary/50 transition-all duration-300">
               <CardHeader>

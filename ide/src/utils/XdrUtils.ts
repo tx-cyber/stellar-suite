@@ -15,8 +15,31 @@ export interface StructField {
   value: unknown;
 }
 
+function normalizeDecodedValue(val: unknown): unknown {
+  if (typeof val === "bigint") {
+    if (val <= BigInt(Number.MAX_SAFE_INTEGER) && val >= BigInt(Number.MIN_SAFE_INTEGER)) {
+      return Number(val);
+    }
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val.map(normalizeDecodedValue);
+  }
+  if (val && typeof val === "object") {
+    const res: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val)) {
+      res[k] = normalizeDecodedValue(v);
+    }
+    return res;
+  }
+  return val;
+}
+
 export function encodeToXdr(value: unknown): XdrEncodeResult {
-  const scVal = nativeToScVal(value);
+  const options = typeof value === "number" && Number.isInteger(value) && value >= -2147483648 && value <= 2147483647
+    ? { type: "i32" }
+    : undefined;
+  const scVal = nativeToScVal(value, options);
   return {
     xdrBase64: scVal.toXDR("base64"),
     scvType: scVal.switch().name,
@@ -26,7 +49,7 @@ export function encodeToXdr(value: unknown): XdrEncodeResult {
 export function decodeFromXdr(xdrBase64: string): XdrDecodeResult {
   const scVal = xdr.ScVal.fromXDR(xdrBase64, "base64");
   return {
-    value: scValToNative(scVal),
+    value: normalizeDecodedValue(scValToNative(scVal)),
     scvType: scVal.switch().name,
   };
 }
@@ -50,7 +73,7 @@ export function decodeMap(xdrBase64: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const entry of scVal.map()!) {
     const key = String(scValToNative(entry.key()));
-    result[key] = scValToNative(entry.val());
+    result[key] = normalizeDecodedValue(scValToNative(entry.val()));
   }
   return result;
 }
@@ -65,7 +88,7 @@ export function decodeVec(xdrBase64: string): unknown[] {
   if (scVal.switch().name !== "scvVec") {
     throw new Error(`Expected scvVec, got ${scVal.switch().name}`);
   }
-  return scVal.vec()!.map((v) => scValToNative(v));
+  return scVal.vec()!.map((v) => normalizeDecodedValue(scValToNative(v)));
 }
 
 export function encodeStruct(fields: StructField[]): string {
@@ -86,6 +109,6 @@ export function decodeStruct(xdrBase64: string): StructField[] {
   }
   return scVal.map()!.map((entry) => ({
     name: String(scValToNative(entry.key())),
-    value: scValToNative(entry.val()),
+    value: normalizeDecodedValue(scValToNative(entry.val())),
   }));
 }
