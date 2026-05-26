@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { Search, X, Plus, Filter } from "lucide-react";
+import React, { useState, useEffect, useCallback } from "react";
+import { Search, X, Plus, Filter, Trash2, RotateCcw, AlertTriangle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,8 +20,13 @@ import { TagsEditModal } from "./TagsEditModal";
 import { useProjects } from "@/hooks/useProjects";
 import { getAllProjectTags, getTagCounts } from "@/store/useProjectsStore";
 import type { ProjectMeta } from "@/lib/cloud/cloudSyncService";
+import { toast } from "sonner";
 
 export function ProjectsLanding() {
+  const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
+  const [trashProjects, setTrashProjects] = useState<ProjectMeta[]>([]);
+  const [isTrashLoading, setIsTrashLoading] = useState(false);
+
   const {
     projects,
     filteredProjects,
@@ -32,6 +37,8 @@ export function ProjectsLanding() {
     toggleTag,
     setSearchQuery,
     updateProjectTags,
+    deleteProject,
+    loadProjects,
   } = useProjects();
 
   const [editingProject, setEditingProject] = useState<ProjectMeta | null>(null);
@@ -39,6 +46,28 @@ export function ProjectsLanding() {
 
   const allTags = getAllProjectTags(projects);
   const tagCounts = getTagCounts(projects);
+
+  const loadTrashProjects = useCallback(async () => {
+    setIsTrashLoading(true);
+    try {
+      const res = await fetch("/api/projects?trash=true");
+      if (!res.ok) throw new Error("Failed to load trash projects");
+      const data = await res.json();
+      setTrashProjects(data);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setIsTrashLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "trash") {
+      loadTrashProjects();
+    } else {
+      loadProjects();
+    }
+  }, [activeTab, loadProjects, loadTrashProjects]);
 
   const handleEditTags = (project: ProjectMeta) => {
     setEditingProject(project);
@@ -53,6 +82,54 @@ export function ProjectsLanding() {
     }
   };
 
+  const handleSoftDelete = async (projectId: string) => {
+    try {
+      await deleteProject(projectId);
+      toast.success("Project moved to Trash.");
+    } catch {
+      toast.error("Failed to delete project.");
+    }
+  };
+
+  const handleRestore = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/restore`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      toast.success("Project restored successfully.");
+      loadTrashProjects();
+    } catch {
+      toast.error("Failed to restore project.");
+    }
+  };
+
+  const handlePermanentDelete = async (projectId: string) => {
+    if (window.confirm("Are you sure you want to permanently delete this project? This action cannot be undone.")) {
+      try {
+        const res = await fetch(`/api/projects/${projectId}?permanent=true`, { method: "DELETE" });
+        if (!res.ok) throw new Error();
+        toast.success("Project permanently deleted.");
+        loadTrashProjects();
+      } catch {
+        toast.error("Failed to delete project permanently.");
+      }
+    }
+  };
+
+  const displayedProjects = activeTab === "active" ? filteredProjects : trashProjects.filter((project) => {
+    const matchesSearch =
+      !searchQuery ||
+      project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.id.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesTags =
+      selectedTags.length === 0 ||
+      selectedTags.every((selectedTag) =>
+        project.tags?.some((tag) => tag.id === selectedTag.id),
+      );
+
+    return matchesSearch && matchesTags;
+  });
+
   return (
     <div className="flex h-screen bg-background">
       {/* Filter Sidebar */}
@@ -61,7 +138,7 @@ export function ProjectsLanding() {
         selectedTags={selectedTags}
         tagCounts={tagCounts}
         onToggleTag={toggleTag}
-        projectCount={filteredProjects.length}
+        projectCount={displayedProjects.length}
       />
 
       {/* Main Content */}
@@ -70,7 +147,31 @@ export function ProjectsLanding() {
         <div className="border-b bg-card p-4">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h1 className="text-2xl font-bold">Projects</h1>
+              <div className="flex items-center gap-4">
+                <h1 className="text-2xl font-bold">Projects</h1>
+                <div className="flex border rounded-lg overflow-hidden bg-background">
+                  <button
+                    onClick={() => setActiveTab("active")}
+                    className={`px-3 py-1.5 text-xs font-semibold ${
+                      activeTab === "active"
+                        ? "bg-primary text-primary-foreground"
+                        : "hover:bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    Active
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("trash")}
+                    className={`px-3 py-1.5 text-xs font-semibold ${
+                      activeTab === "trash"
+                        ? "bg-primary text-primary-foreground"
+                        : "hover:bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    Trash
+                  </button>
+                </div>
+              </div>
               <Button className="gap-2">
                 <Plus className="w-4 h-4" />
                 New Project
@@ -129,11 +230,13 @@ export function ProjectsLanding() {
               </div>
             )}
 
-            {isLoading ? (
+            {(isLoading || isTrashLoading) ? (
               <ProjectsGridSkeleton />
-            ) : filteredProjects.length === 0 ? (
+            ) : displayedProjects.length === 0 ? (
               <div className="text-center py-12">
-                <p className="text-muted-foreground mb-2">No projects found</p>
+                <p className="text-muted-foreground mb-2">
+                  {activeTab === "active" ? "No projects found" : "Trash is empty"}
+                </p>
                 {selectedTags.length > 0 && (
                   <p className="text-sm text-muted-foreground">
                     Try adjusting your filters
@@ -142,15 +245,17 @@ export function ProjectsLanding() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredProjects.map((project) => (
+                {displayedProjects.map((project) => (
                   <ProjectCard
                     key={project.id}
                     project={project}
                     onOpen={(id) => {
-                      // Handle opening project
                       console.log("Opening project:", id);
                     }}
                     onEditTags={handleEditTags}
+                    onDelete={activeTab === "active" ? handleSoftDelete : handlePermanentDelete}
+                    onRestore={activeTab === "trash" ? handleRestore : undefined}
+                    isTrash={activeTab === "trash"}
                   />
                 ))}
               </div>

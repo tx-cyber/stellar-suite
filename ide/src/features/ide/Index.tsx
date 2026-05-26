@@ -39,7 +39,7 @@ import {
   hasRootTestsDirectory,
   listIntegrationTargets,
 } from "@/lib/integrationTestDiscovery";
-import { instantiateContract } from "@/lib/contractInstantiator";
+import { instantiateContract, uploadWasm } from "@/lib/contractInstantiator";
 import { useDeployedContractsStore } from "@/store/useDeployedContractsStore";
 import useEnvironmentSlotsStore from "@/store/useEnvironmentSlotsStore";
 import { useDeploymentStore } from "@/store/useDeploymentStore";
@@ -842,47 +842,89 @@ export default function Index() {
     setTerminalExpanded(true);
     appendTerminalOutput(`> Deploying to ${network}…\r\n`);
 
+    // Traverses virtual file nodes to find the wasm file matching contract name
+    const findWasmFile = (nodes: FileNode[], cName: string): FileNode | null => {
+      for (const node of nodes) {
+        if (node.type === "file" && node.name.endsWith(".wasm") && node.name.toLowerCase().includes(cName.toLowerCase())) {
+          return node;
+        }
+        if (node.type === "folder" && node.children) {
+          const found = findWasmFile(node.children, cName);
+          if (found) return found;
+        }
+      }
+      const firstWasm = (nodesList: FileNode[]): FileNode | null => {
+        for (const node of nodesList) {
+          if (node.type === "file" && node.name.endsWith(".wasm")) return node;
+          if (node.type === "folder" && node.children) {
+            const found = firstWasm(node.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      return firstWasm(nodes);
+    };
+
     try {
-      // Phase 1: compile + upload WASM
+      // Phase 1: compile WASM
       setDeploymentStep("uploading");
-      appendTerminalOutput("> Compiling and uploading WASM…\r\n");
+      appendTerminalOutput("> Compiling WASM…\r\n");
 
-      const response = await fetch(COMPILE_API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(compilePayload),
+      const result = await workerCompile({
+        url: COMPILE_API_URL,
+        payload: compilePayload,
+        onChunk: appendTerminalOutput,
       });
 
-      const processor = createStreamProcessor({
-        onTerminalData: appendTerminalOutput,
-      });
-      const output = await readCompileResponse(response, processor);
-
-      if (!response.ok) {
+      if (!result.ok) {
         throw new Error(
-          output.trim() || `Build failed with status ${response.status}`,
+          result.output.trim() || `Build failed with status ${result.status}`,
         );
       }
 
-      // Extract WASM hash from compile output
-      let wasmHash: string | null = null;
-      try {
-        const parsed = JSON.parse(output) as { contractHash?: string | null };
-        wasmHash = parsed.contractHash ?? null;
-      } catch {
-        const match = output.match(/contract[_\s]?hash[:\s]+([a-f0-9]{64})/i);
-        wasmHash = match?.[1] ?? null;
+      appendTerminalOutput("✓ Compilation finished.\r\n");
+
+      let wasmBase64 = result.wasmBase64;
+      if (!wasmBase64) {
+        const wasmFile = findWasmFile(files, contractName);
+        if (wasmFile && wasmFile.content) {
+          wasmBase64 = wasmFile.content;
+        }
       }
 
-      if (!wasmHash) {
-        throw new Error(
-          "WASM uploaded but no contract hash was returned. " +
-            "Cannot proceed to instantiation.",
-        );
+      if (!wasmBase64) {
+        throw new Error("No WASM binary data found for upload. Make sure compiling produces a .wasm output.");
       }
 
+      // Upload WASM bytes to the network
+      appendTerminalOutput("> Uploading WASM bytes to network…\r\n");
+      const rpcUrl =
+        network === "local"
+          ? useWorkspaceStore.getState().customRpcUrl
+          : (NETWORK_CONFIG[network as NetworkKey]?.horizon ??
+            "https://soroban-testnet.stellar.org:443");
+      const networkPassphrase =
+        NETWORK_CONFIG[network as NetworkKey]?.passphrase ??
+        "Test SDF Network ; September 2015";
+
+      const wasmBytes = Uint8Array.from(atob(wasmBase64), (c) => c.charCodeAt(0));
+
+      const uploadResult = await uploadWasm({
+        wasmBytes,
+        rpcUrl,
+        networkPassphrase,
+        activeContext,
+        activeIdentity,
+        webWalletPublicKey: null,
+        walletType: null,
+        onStatus: (s) => {
+          appendTerminalOutput(`  [upload] ${s.message}\r\n`);
+        },
+      });
+
+      const wasmHash = uploadResult.wasmHash;
       appendTerminalOutput(`✓ WASM uploaded. Hash: ${wasmHash}\r\n`);
-      // Persist hash so the user can retry instantiation without re-uploading
       setPendingWasmHash(wasmHash);
 
       // Phase 2: instantiate contract
@@ -923,6 +965,10 @@ export default function Index() {
     setContractId,
     setPendingWasmHash,
     setTerminalExpanded,
+    files,
+    workerCompile,
+    activeContext,
+    activeIdentity,
   ]);
 
   const handleTest = useCallback(() => {

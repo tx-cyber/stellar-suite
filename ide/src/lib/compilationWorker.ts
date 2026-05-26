@@ -31,6 +31,7 @@ export interface CompileResult {
   ok: boolean;
   status: number;
   output: string;
+  wasmBase64?: string;
 }
 
 interface PendingJob {
@@ -106,7 +107,7 @@ export class CompilationWorker {
       case 'done':
         this.resourceMonitor.stop(msg.id);
         this.jobs.delete(msg.id);
-        job!.resolve({ ok: msg.ok, status: msg.status ?? 0, output: msg.output });
+        job!.resolve({ ok: msg.ok, status: msg.status ?? 0, output: msg.output, wasmBase64: msg.wasmBase64 });
         break;
 
       case 'error':
