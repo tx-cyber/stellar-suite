@@ -25,6 +25,7 @@ pub struct HelloContract;
 impl HelloContract {
     /// Say hello to someone.
     pub fn hello(env: Env, to: Symbol) -> Vec<Symbol> {
+        env.events().publish((symbol_short!("greeting"),), to.clone());
         vec![&env, symbol_short!("Hello"), to]
     }
 
@@ -65,6 +66,12 @@ fn test_hello() {
         words,
         vec![&env, symbol_short!("Hello"), symbol_short!("Dev")]
     );
+
+    use soroban_sdk::testutils::Events as _;
+    let events = env.events().all();
+    assert!(events.iter().any(|(_, topics, _)| {
+        topics.contains(symbol_short!("greeting").into())
+    }));
 }`,
       },
       {
@@ -97,7 +104,7 @@ soroban-sdk = { workspace = true, features = ["testutils"] }`,
         language: "rust",
         content: `#![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, String,
+    contract, contractimpl, contracttype, Address, Env, String,
 };
 
 #[contracttype]
@@ -106,6 +113,7 @@ pub enum DataKey {
     Name,
     Symbol,
     Decimals,
+    Balance(Address),
 }
 
 #[contract]
@@ -121,6 +129,9 @@ impl TokenContract {
         symbol: String,
     ) {
         admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("already initialized");
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Decimals, &decimal);
         env.storage().instance().set(&DataKey::Name, &name);
@@ -147,7 +158,105 @@ impl TokenContract {
             .get(&DataKey::Decimals)
             .unwrap()
     }
-}`,
+
+    pub fn balance(env: Env, address: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Balance(address))
+            .unwrap_or(0i128)
+    }
+
+    pub fn mint(env: Env, admin: Address, to: Address, amount: i128) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            panic!("not admin");
+        }
+        let balance_key = DataKey::Balance(to.clone());
+        let current_balance: i128 = env.storage().instance().get(&balance_key).unwrap_or(0i128);
+        env.storage().instance().set(&balance_key, &(current_balance + amount));
+    }
+
+    pub fn set_admin(env: Env, admin: Address, new_admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            panic!("not admin");
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    }
+}
+
+mod test;`,
+      },
+      {
+        name: "test.rs",
+        type: "file",
+        language: "rust",
+        content: `#![cfg(test)]
+
+use super::*;
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+#[test]
+fn test_token_mint_and_set_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenContract);
+    let client = TokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let name = String::from_str(&env, "Test Token");
+    let symbol = String::from_str(&env, "TST");
+
+    client.initialize(&admin, &7, &name, &symbol);
+
+    assert_eq!(client.decimals(), 7);
+
+    // Mint tokens (admin required)
+    client.mint(&admin, &alice, &1000);
+    assert_eq!(client.balance(&alice), 1000);
+
+    // Set admin (admin required)
+    let new_admin = Address::generate(&env);
+    client.set_admin(&admin, &new_admin);
+
+    // Non-admin attempt should panic (bypass prevention verification)
+    let res = std::panic::catch_unwind(|| {
+        let env_inner = Env::default();
+        env_inner.mock_all_auths();
+        let c_id = env_inner.register_contract(None, TokenContract);
+        let c_client = TokenContractClient::new(&env_inner, &c_id);
+        let adm = Address::generate(&env_inner);
+        let ali = Address::generate(&env_inner);
+        let nm = String::from_str(&env_inner, "Test Token");
+        let sym = String::from_str(&env_inner, "TST");
+        c_client.initialize(&adm, &7, &nm, &sym);
+        // Try to mint with non-admin (ali)
+        c_client.mint(&ali, &ali, &100);
+    });
+    assert!(res.is_err());
+  }`,
+      },
+      {
+        name: "Cargo.toml",
+        type: "file",
+        language: "toml",
+        content: `[package]
+name = "token-sample"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }`,
       },
     ],
   },
@@ -201,6 +310,81 @@ impl IncrementContract {
             .unwrap_or(0)
     }
 }`,
+      },
+    ],
+  },
+  {
+    name: "cross_contract",
+    type: "folder",
+    children: [
+      {
+        name: "lib.rs",
+        type: "file",
+        language: "rust",
+        content: `#![no_std]
+use soroban_sdk::{contract, contractimpl, Address, Env};
+
+#[contract]
+pub struct CalleeContract;
+
+#[contractimpl]
+impl CalleeContract {
+    pub fn add(env: Env, a: u32, b: u32) -> u32 {
+        a + b
+    }
+}
+
+#[contract]
+pub struct CallerContract;
+
+#[contractimpl]
+impl CallerContract {
+    pub fn call_add(env: Env, callee_id: Address, a: u32, b: u32) -> u32 {
+        let client = CalleeContractClient::new(&env, &callee_id);
+        client.add(&a, &b)
+    }
+}
+
+mod test;`,
+      },
+      {
+        name: "test.rs",
+        type: "file",
+        language: "rust",
+        content: `#![cfg(test)]
+
+use super::*;
+use soroban_sdk::Env;
+
+#[test]
+fn test_cross_contract_call() {
+    let env = Env::default();
+    
+    let callee_id = env.register_contract(None, CalleeContract);
+    let caller_id = env.register_contract(None, CallerContract);
+    let caller_client = CallerContractClient::new(&env, &caller_id);
+    
+    let result = caller_client.call_add(&callee_id, &5, &7);
+    assert_eq!(result, 12);
+}`,
+      },
+      {
+        name: "Cargo.toml",
+        type: "file",
+        language: "toml",
+        content: `[package]
+name = "cross-contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }`,
       },
     ],
   },

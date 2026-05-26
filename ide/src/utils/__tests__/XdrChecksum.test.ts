@@ -48,7 +48,7 @@ describe("XdrChecksum", () => {
   });
 
   it("rejects malformed base64 input", async () => {
-    await expect(checksumXdrPayload("not valid")).rejects.toThrow(
+    await expect(checksumXdrPayload("not-valid")).rejects.toThrow(
       "XDR payload must be valid standard Base64.",
     );
   });
