@@ -34,6 +34,22 @@ vi.mock("@/hooks/useDebouncedValue", () => ({
   useDebouncedValue: vi.fn((v: unknown) => v),
 }));
 
+vi.mock("@/hooks/useProjects", () => ({
+  useProjects: vi.fn(() => ({
+    projects: [],
+    filteredProjects: [],
+    selectedTags: [],
+    searchQuery: "",
+    isLoading: false,
+    error: null,
+    toggleTag: vi.fn(),
+    setSearchQuery: vi.fn(),
+    updateProjectTags: vi.fn(),
+    deleteProject: vi.fn(),
+    loadProjects: vi.fn(),
+  })),
+}));
+
 vi.mock("@/utils/searchWalker", () => ({
   searchWalker: vi.fn(() => Promise.resolve({ matches: [], error: null })),
 }));

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Search, X, Plus, Filter, Trash2, RotateCcw, AlertTriangle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -24,8 +25,7 @@ import { toast } from "sonner";
 
 export function ProjectsLanding() {
   const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
-  const [trashProjects, setTrashProjects] = useState<ProjectMeta[]>([]);
-  const [isTrashLoading, setIsTrashLoading] = useState(false);
+  const queryClient = useQueryClient();
 
   const {
     projects,
@@ -47,19 +47,15 @@ export function ProjectsLanding() {
   const allTags = getAllProjectTags(projects);
   const tagCounts = getTagCounts(projects);
 
-  const loadTrashProjects = useCallback(async () => {
-    setIsTrashLoading(true);
-    try {
+  const { data: trashProjects = [], isLoading: isTrashLoading, refetch: loadTrashProjects } = useQuery({
+    queryKey: ["trashProjects"],
+    queryFn: async () => {
       const res = await fetch("/api/projects?trash=true");
       if (!res.ok) throw new Error("Failed to load trash projects");
-      const data = await res.json();
-      setTrashProjects(data);
-    } catch (err: any) {
-      console.error(err);
-    } finally {
-      setIsTrashLoading(false);
-    }
-  }, []);
+      return res.json() as Promise<ProjectMeta[]>;
+    },
+    enabled: activeTab === "trash",
+  });
 
   useEffect(() => {
     if (activeTab === "trash") {
@@ -91,27 +87,44 @@ export function ProjectsLanding() {
     }
   };
 
-  const handleRestore = async (projectId: string) => {
-    try {
+  const restoreMutation = useMutation({
+    mutationFn: async (projectId: string) => {
       const res = await fetch(`/api/projects/${projectId}/restore`, { method: "POST" });
-      if (!res.ok) throw new Error();
+      if (!res.ok) throw new Error("Failed to restore project");
+      return projectId;
+    },
+    onSuccess: () => {
       toast.success("Project restored successfully.");
-      loadTrashProjects();
-    } catch {
+      queryClient.invalidateQueries({ queryKey: ["trashProjects"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: () => {
       toast.error("Failed to restore project.");
-    }
+    },
+  });
+
+  const permanentDeleteMutation = useMutation({
+    mutationFn: async (projectId: string) => {
+      const res = await fetch(`/api/projects/${projectId}?permanent=true`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete project permanently");
+      return projectId;
+    },
+    onSuccess: () => {
+      toast.success("Project permanently deleted.");
+      queryClient.invalidateQueries({ queryKey: ["trashProjects"] });
+    },
+    onError: () => {
+      toast.error("Failed to delete project permanently.");
+    },
+  });
+
+  const handleRestore = async (projectId: string) => {
+    await restoreMutation.mutateAsync(projectId);
   };
 
   const handlePermanentDelete = async (projectId: string) => {
     if (window.confirm("Are you sure you want to permanently delete this project? This action cannot be undone.")) {
-      try {
-        const res = await fetch(`/api/projects/${projectId}?permanent=true`, { method: "DELETE" });
-        if (!res.ok) throw new Error();
-        toast.success("Project permanently deleted.");
-        loadTrashProjects();
-      } catch {
-        toast.error("Failed to delete project permanently.");
-      }
+      await permanentDeleteMutation.mutateAsync(projectId);
     }
   };
 

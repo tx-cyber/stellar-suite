@@ -1,79 +1,69 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useProjectsStore } from "@/store/useProjectsStore";
-import { listProjects, saveProject } from "@/lib/cloud/cloudSyncService";
+import { listProjects } from "@/lib/cloud/cloudSyncService";
 import type { ProjectMeta, ProjectTag } from "@/lib/cloud/cloudSyncService";
 
 export function useProjects() {
+  const queryClient = useQueryClient();
+
   const {
     projects,
     selectedTags,
     searchQuery,
-    isLoading,
-    error,
     setProjects,
-    setIsLoading,
-    setError,
     filteredProjects,
     toggleTag,
     setSelectedTags,
     setSearchQuery,
   } = useProjectsStore();
 
-  const loadProjects = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await listProjects();
-      setProjects(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load projects";
-      setError(message);
-      console.error("Failed to load projects:", err);
-    } finally {
-      setIsLoading(false);
+  const { data: queryProjects = [], isLoading, error: queryError, refetch: loadProjects } = useQuery({
+    queryKey: ["projects"],
+    queryFn: listProjects,
+  });
+
+  // Synchronize React Query list to the local store
+  useEffect(() => {
+    if (queryProjects) {
+      setProjects(queryProjects);
     }
-  }, [setProjects, setIsLoading, setError]);
+  }, [queryProjects, setProjects]);
+
+  const deleteMutation = useMutation({
+    mutationFn: async (projectId: string) => {
+      const res = await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+      if (!res.ok) {
+        throw new Error("Failed to delete project");
+      }
+      return projectId;
+    },
+    onSuccess: (projectId) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setProjects(projects.filter((p) => p.id !== projectId));
+    },
+  });
 
   const updateProjectTags = useCallback(
     async (project: ProjectMeta, newTags: ProjectTag[]) => {
-      try {
-        const updatedProject = { ...project, tags: newTags };
-        // Update local state optimistically
-        setProjects(
-          projects.map((p) => (p.id === project.id ? updatedProject : p)),
-        );
-        // Note: You would need to add an updateProject endpoint or use saveProject
-        // For now, we're just updating the UI
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to update tags";
-        setError(message);
-        console.error("Failed to update tags:", err);
-      }
+      const updatedProject = { ...project, tags: newTags };
+      setProjects(
+        projects.map((p) => (p.id === project.id ? updatedProject : p)),
+      );
     },
-    [projects, setProjects, setError],
+    [projects, setProjects],
   );
 
   const deleteProject = useCallback(
     async (projectId: string) => {
-      try {
-        // Make API call to delete
-        await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
-        setProjects(projects.filter((p) => p.id !== projectId));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to delete project";
-        setError(message);
-        console.error("Failed to delete project:", err);
-      }
+      await deleteMutation.mutateAsync(projectId);
     },
-    [projects, setProjects, setError],
+    [deleteMutation],
   );
 
-  // Load projects on mount
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load projects" : null;
 
   return {
     projects,
